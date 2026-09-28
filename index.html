@@ -171,6 +171,3164 @@ async function addFriend(username){try{const d=await api('/api/friend/add',{meth
 function openTransfer(instanceId){const friends=state.friends.map(u=>`<button class="friend" style="text-align:left" data-target="${esc((u.username||'').replace(/^@/,''))}">${u.photo_url?`<img src="${esc(u.photo_url)}" alt="">`:`<img src="${fallbackImage()}" alt="">`}<div class="friend-info"><b>${esc([u.first_name,u.last_name].filter(Boolean).join(' ')||u.username||'Пользователь')}</b><span>${esc(u.username||'')}</span></div></button>`).join('');modal(`<div class="sheet-head"><h3>Передать подарок</h3><button class="x" data-close><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="transfer-form"><div class="form-label">Выбери друга</div><div class="friend-list" id="transferFriends">${friends||'<div class="empty" style="grid-column:1/-1"><strong>Нет друзей</strong><span>Добавь пользователя в разделе «Друзья».</span></div>'}</div><input class="input" id="transferUser" placeholder="Или @username"><button class="btn primary" id="transferBtn">Передать</button></div>`);$$('[data-target]').forEach(b=>b.onclick=()=>{$('#transferUser').value='@'+b.dataset.target});$('#transferBtn').onclick=async()=>{const u=$('#transferUser').value.trim();if(!u){showToast('Выбери друга');return}try{await api('/api/transfer',{method:'POST',body:JSON.stringify({instanceId,username:u})});closeModal();state.inventory=state.inventory.filter(x=>x.instance_id!==instanceId);renderAll();showToast('Подарок передан');}catch(e){showToast(e.message)}}}
 async function sellItem(instanceId){const item=state.inventory.find(x=>x.instance_id===instanceId);if(!item)return;if(!confirm(`Продать ${item.name} #${String(item.serial).padStart(6,'0')} за ${fmt(item.sell_value)} жетонов?`))return;try{const d=await api('/api/sell',{method:'POST',body:JSON.stringify({instanceId})});state.user.balance=d.balance;state.inventory=state.inventory.filter(x=>x.instance_id!==instanceId);state.inventoryTotal=Math.max(0,state.inventoryTotal-1);renderAll();showToast(`Продано · +${fmt(d.sold.amount)} жет.`)}catch(e){showToast(e.message)}}
 async function boot(){bind();renderShop();renderAll({ready:true,reward:1000});$('#loadingText').textContent='Сверяем каталог…';await loadCatalog();$('#loadingText').textContent='Загружаем аккаунт…';await loadMe();renderAll();$('#loading').style.opacity='0';setTimeout(()=>$('#loading').remove(),300)}
+/* GiftTGame UI patch */
+
+async function ggInit(){
+  const app=
+    window.Telegram?.WebApp ||
+    tg;
+
+  if(!app)return '';
+
+  try{
+    app.ready();
+    app.expand();
+  }catch(_){}
+
+  const started=
+    Date.now();
+
+  while(
+    Date.now()-
+    started <
+    3500
+  ){
+    const init=
+      window.Telegram?.WebApp?.initData ||
+      app.initData ||
+      '';
+
+    if(init)return init;
+
+    await new Promise(
+      resolve =>
+        setTimeout(
+          resolve,
+          80
+        )
+    );
+  }
+
+  return '';
+}
+
+api=async function(
+  path,
+  options={}
+){
+  const base=
+    APP_CONFIG.API_BASE
+      .replace(
+        /\/$/,
+        ''
+      );
+
+  if(
+    !base ||
+    base.includes(
+      'YOUR-WORKER'
+    )
+  ){
+    throw new Error(
+      'Не настроен API_BASE'
+    );
+  }
+
+  const controller=
+    new AbortController();
+
+  const timer=
+    setTimeout(
+      () =>
+        controller.abort(),
+      10000
+    );
+
+  const headers=
+    new Headers(
+      options.headers||{}
+    );
+
+  /*
+    Не добавляем JSON Content-Type
+    к GET, чтобы не делать лишний
+    preflight.
+  */
+
+  if(
+    options.body!=null &&
+    !headers.has(
+      'Content-Type'
+    )
+  ){
+    headers.set(
+      'Content-Type',
+      'application/json'
+    );
+  }
+
+  const init=
+    path===
+      '/api/catalog'
+      ? ''
+      :
+        (
+          window.Telegram?.WebApp?.initData ||
+          tg?.initData ||
+          await ggInit()
+        );
+
+  if(init){
+    headers.set(
+      'X-Telegram-Init-Data',
+      init
+    );
+  }
+
+  try{
+
+    const response=
+      await fetch(
+        base+path,
+        {
+          ...options,
+          headers,
+          signal:
+            controller.signal,
+          mode:'cors'
+        }
+      );
+
+    const data=
+      await response
+        .json()
+        .catch(
+          () => ({
+            ok:false,
+            error:
+              'Некорректный ответ сервера'
+          })
+        );
+
+    if(
+      !response.ok ||
+      data.ok===false
+    ){
+      throw new Error(
+        data.error||
+        `HTTP ${response.status}`
+      );
+    }
+
+    return data;
+
+  }catch(error){
+
+    if(
+      error?.name===
+      'AbortError'
+    ){
+      throw new Error(
+        'Worker не ответил за 10 секунд'
+      );
+    }
+
+    throw error;
+
+  }finally{
+
+    clearTimeout(
+      timer
+    );
+  }
+};
+
+loadMe=async function(){
+
+  const init=
+    await ggInit();
+
+  if(!init){
+    state.demo=true;
+    setIdentityDemo();
+    return;
+  }
+
+  try{
+
+    const data=
+      await api(
+        '/api/me',
+        {
+          method:
+            'GET'
+        }
+      );
+
+    state.api=
+      true;
+
+    state.demo=
+      false;
+
+    state.user=
+      data.user;
+
+    state.friends=
+      data.friends||[];
+
+    state.inventory=
+      data.inventory||[];
+
+    state.inventoryTotal=
+      Number(
+        data.inventory_total||0
+      );
+
+    state.history=
+      data.history||[];
+
+    renderAll(
+      data.daily
+    );
+
+  }catch(error){
+
+    console.error(
+      'GiftTGame account error',
+      error
+    );
+
+    state.demo=
+      true;
+
+    setIdentityDemo();
+
+    showToast(
+      'Аккаунт: '+
+      error.message
+    );
+  }
+};
+
+/* ============================================================
+   НАЗВАНИЕ
+============================================================ */
+
+document.title=
+  'GiftTGame';
+
+document
+  .querySelectorAll(
+    '.brand-title,.loading-card b,.kicker'
+  )
+  .forEach(
+    element =>
+      element.textContent=
+        'GiftTGame'
+  );
+
+/* ============================================================
+   BACKGROUNDS
+============================================================ */
+
+const GG_BGS=[
+  [
+    'Sky',
+    1.03,
+    '#dff6ff',
+    '#74c9ef'
+  ],
+  [
+    'Mint',
+    1.05,
+    '#e1fff4',
+    '#71d7b0'
+  ],
+  [
+    'Violet',
+    1.08,
+    '#eee7ff',
+    '#9b7be7'
+  ],
+  [
+    'Sunset',
+    1.10,
+    '#fff0e4',
+    '#f59c74'
+  ],
+  [
+    'Ocean',
+    1.12,
+    '#dff1ff',
+    '#459fd6'
+  ],
+  [
+    'Royal',
+    1.18,
+    '#eeeaff',
+    '#7462d7'
+  ],
+  [
+    'Crystal',
+    1.25,
+    '#e8fbff',
+    '#66d2e6'
+  ],
+  [
+    'Neon',
+    1.30,
+    '#efffe8',
+    '#8ad84d'
+  ],
+  [
+    'Noir',
+    1.35,
+    '#e9edf2',
+    '#435260'
+  ],
+  [
+    'Prism',
+    1.45,
+    '#f6edff',
+    '#cd69ef'
+  ],
+  [
+    'Gold',
+    1.60,
+    '#fff8df',
+    '#e7ac38'
+  ],
+  [
+    'Galaxy',
+    1.80,
+    '#e9ecff',
+    '#6658dd'
+  ]
+];
+
+function ggBg(g){
+
+  const seed=
+    g?.serial
+      ? Number(
+          g.serial
+        )
+      :
+        hash(
+          String(
+            g?.id||
+            g?.name||
+            1
+          )
+        );
+
+  return GG_BGS[
+    Math.abs(
+      Number(
+        seed
+      )||1
+    ) %
+    GG_BGS.length
+  ];
+}
+
+bgFor=function(g){
+
+  const b=
+    ggBg(g);
+
+  return `
+    radial-gradient(
+      circle at 28% 18%,
+      rgba(255,255,255,.74),
+      transparent 32%
+    ),
+    linear-gradient(
+      145deg,
+      ${b[2]},
+      ${b[3]}
+    )
+  `;
+};
+
+/* ============================================================
+   БОЛЬШОЕ ПРЕВЬЮ КЕЙСОВ
+============================================================ */
+
+casePoolPreview=
+function(c){
+
+  const pool=
+    state.catalog
+      .filter(
+        g =>
+          Number(
+            g.stars||0
+          )>0
+      );
+
+  const result=[];
+  const seen=
+    new Set();
+
+  if(!pool.length)
+    return result;
+
+  for(
+    const rarity
+    of [
+      'common',
+      'uncommon',
+      'rare',
+      'epic',
+      'legendary'
+    ]
+  ){
+
+    const arr=
+      pool.filter(
+        g =>
+          g.rarity===
+          rarity
+      );
+
+    if(!arr.length)
+      continue;
+
+    const gift=
+      arr[
+        Math.abs(
+          hash(
+            c.id+
+            ':'+
+            rarity
+          )
+        ) %
+        arr.length
+      ];
+
+    if(
+      gift &&
+      !seen.has(
+        gift.id
+      )
+    ){
+      seen.add(
+        gift.id
+      );
+
+      result.push(
+        gift
+      );
+    }
+  }
+
+  let n=
+    Math.abs(
+      hash(
+        c.id+
+        ':pool'
+      )
+    );
+
+  while(
+    result.length<
+      18 &&
+    result.length<
+      pool.length
+  ){
+
+    const gift=
+      pool[
+        n %
+        pool.length
+      ];
+
+    if(
+      gift &&
+      !seen.has(
+        gift.id
+      )
+    ){
+      seen.add(
+        gift.id
+      );
+
+      result.push(
+        gift
+      );
+    }
+
+    n+=11;
+  }
+
+  return result.slice(
+    0,
+    18
+  );
+};
+
+/* ============================================================
+   GG TOKEN
+============================================================ */
+
+function ggToken(
+  cls=''
+){
+
+  return `
+    <svg
+      class="${cls}"
+      viewBox="0 0 100 100">
+
+      <defs>
+        <linearGradient
+          id="ggTokenGradient"
+          x1="0"
+          y1="0"
+          x2="1"
+          y2="1">
+
+          <stop
+            offset="0"
+            stop-color="#f9fcff"/>
+
+          <stop
+            offset="1"
+            stop-color="#55acd1"/>
+
+        </linearGradient>
+      </defs>
+
+      <circle
+        cx="50"
+        cy="50"
+        r="39"
+        fill="url(#ggTokenGradient)"
+        stroke="#118bd1"
+        stroke-width="5"/>
+
+      <circle
+        cx="50"
+        cy="50"
+        r="29"
+        fill="rgba(255,255,255,.15)"
+        stroke="rgba(17,139,209,.28)"
+        stroke-width="2"/>
+
+      <text
+        x="50"
+        y="57"
+        text-anchor="middle"
+        font-family="Arial,sans-serif"
+        font-size="23"
+        font-weight="900"
+        fill="#0875a8">
+        GG
+      </text>
+
+    </svg>
+  `;
+}
+
+function refreshGG(){
+
+  const header=
+    document.querySelector(
+      '#balanceBtn .token-icon'
+    );
+
+  if(header){
+
+    header.outerHTML=
+      ggToken(
+        'token-icon'
+      );
+  }
+
+  const coin=
+    document.querySelector(
+      '#coinButton'
+    );
+
+  if(coin){
+
+    coin.innerHTML=
+      ggToken(
+        'gg-click-token'
+      );
+  }
+
+  document
+    .querySelectorAll(
+      '#coinShop .token-stack'
+    )
+    .forEach(
+      element =>
+        element.outerHTML=
+          ggToken(
+            'token-stack'
+          )
+    );
+}
+
+/* ============================================================
+   СТИЛИ
+============================================================ */
+
+const ggStyle=
+  document.createElement(
+    'style'
+  );
+
+ggStyle.textContent=`
+
+.gg-center{
+  margin-top:12px;
+  display:grid;
+  grid-template-columns:
+    repeat(4,minmax(0,1fr));
+  gap:7px;
+}
+
+.gg-center button{
+  padding:10px;
+  border:1px solid var(--line);
+  border-radius:16px;
+  background:
+    linear-gradient(
+      145deg,
+      #fff,
+      #edf9fe
+    );
+  text-align:left;
+  color:var(--text);
+  box-shadow:
+    0 7px 20px
+    rgba(10,73,107,.06);
+}
+
+.gg-center small{
+  display:block;
+  font-size:7px;
+  text-transform:uppercase;
+  letter-spacing:.1em;
+  color:#0b86c4;
+  font-weight:900;
+}
+
+.gg-center b{
+  display:block;
+  margin-top:4px;
+  font-size:11px;
+}
+
+.gg-center span{
+  display:block;
+  margin-top:3px;
+  font-size:8px;
+  color:var(--muted);
+}
+
+.gg-grid{
+  display:grid;
+  grid-template-columns:
+    repeat(4,minmax(0,1fr));
+  gap:8px;
+}
+
+.gg-card{
+  background:var(--card);
+  border:1px solid var(--line);
+  border-radius:17px;
+  padding:9px;
+}
+
+.gg-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:7px;
+}
+
+.gg-title{
+  font-size:10px;
+  font-weight:900;
+}
+
+.gg-muted{
+  font-size:7px;
+  color:var(--muted);
+}
+
+.gg-reward{
+  font-size:8px;
+  font-weight:900;
+  color:#087fb9;
+}
+
+.gg-taskbar{
+  height:8px;
+  background:#edf3f6;
+  border-radius:99px;
+  overflow:hidden;
+  margin:8px 0;
+}
+
+.gg-taskbar i{
+  display:block;
+  height:100%;
+  background:
+    linear-gradient(
+      90deg,
+      #58c7f6,
+      #168fd4
+    );
+}
+
+.gg-pass{
+  background:
+    linear-gradient(
+      145deg,
+      #0c3550,
+      #1380af
+    );
+  color:#fff;
+  border-radius:22px;
+  padding:15px;
+  box-shadow:
+    0 16px 36px
+    rgba(9,71,104,.22);
+}
+
+.gg-pass h2{
+  margin:0;
+  font-size:20px;
+}
+
+.gg-pass p{
+  font-size:8px;
+  color:#c8ecfb;
+  line-height:1.45;
+  margin:5px 0 10px;
+}
+
+.gg-passlevels{
+  display:grid;
+  grid-template-columns:
+    repeat(5,minmax(0,1fr));
+  gap:6px;
+  margin-top:10px;
+}
+
+.gg-lvl{
+  min-height:92px;
+  background:var(--card);
+  color:var(--text);
+  border:1px solid var(--line);
+  border-radius:13px;
+  padding:6px;
+  display:flex;
+  flex-direction:column;
+  justify-content:space-between;
+}
+
+.gg-lvl.lock{
+  opacity:.5;
+}
+
+.gg-lvl.done{
+  background:#eaf8fd;
+  border-color:#bde7f7;
+}
+
+.gg-market{
+  display:grid;
+  grid-template-columns:
+    repeat(4,minmax(0,1fr));
+  gap:8px;
+}
+
+.gg-market .art{
+  aspect-ratio:1;
+  border-radius:13px;
+  display:grid;
+  place-items:center;
+  overflow:hidden;
+}
+
+.gg-market .art img{
+  width:86%;
+  height:86%;
+  object-fit:contain;
+}
+
+.gg-market b{
+  display:block;
+  margin-top:6px;
+  font-size:9px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+.gg-market small{
+  display:block;
+  margin-top:3px;
+  font-size:7px;
+  color:var(--muted);
+}
+
+.gg-market .price{
+  margin-top:6px;
+  font-size:11px;
+  font-weight:950;
+  color:#087fb9;
+}
+
+.gg-rating{
+  display:grid;
+  gap:5px;
+}
+
+.gg-r{
+  display:grid;
+  grid-template-columns:
+    28px 32px
+    minmax(0,1fr)
+    auto;
+  gap:6px;
+  align-items:center;
+  background:var(--card);
+  border:1px solid var(--line);
+  border-radius:13px;
+  padding:7px;
+}
+
+.gg-r img{
+  width:32px;
+  height:32px;
+  border-radius:10px;
+  object-fit:cover;
+  background:#e8f5fb;
+}
+
+.gg-r b{
+  font-size:9px;
+}
+
+.gg-r small{
+  display:block;
+  font-size:7px;
+  color:var(--muted);
+  margin-top:2px;
+}
+
+.gg-r strong{
+  font-size:8px;
+  color:#087fb9;
+}
+
+.gg-login{
+  display:grid;
+  grid-template-columns:
+    repeat(7,minmax(0,1fr));
+  gap:5px;
+}
+
+.gg-login div{
+  padding:7px 4px;
+  border:1px solid var(--line);
+  background:var(--card);
+  border-radius:11px;
+  text-align:center;
+}
+
+.gg-login b{
+  display:block;
+  font-size:8px;
+}
+
+.gg-login span{
+  display:block;
+  margin-top:5px;
+  font-size:7px;
+  color:var(--muted);
+}
+
+.gg-bg-badge{
+  display:inline-flex;
+  padding:4px 6px;
+  border-radius:7px;
+  background:rgba(255,255,255,.78);
+  font-size:7px;
+  font-weight:900;
+  color:#294756;
+}
+
+body.gg-night{
+  background:#0f1820!important;
+  color:#e8f3f7!important;
+}
+
+body.gg-night .app{
+  background:
+    linear-gradient(
+      180deg,
+      #0f1820,
+      #111d26 50%,
+      #0e1720
+    )!important;
+}
+
+body.gg-night .top,
+body.gg-night .bottom{
+  background:
+    rgba(16,27,36,.96)!important;
+  border-color:#263a46!important;
+}
+
+body.gg-night .hero,
+body.gg-night .stat,
+body.gg-night .case,
+body.gg-night .gift,
+body.gg-night .inv,
+body.gg-night .daily,
+body.gg-night .panel,
+body.gg-night .friend-add,
+body.gg-night .friend,
+body.gg-night .shop,
+body.gg-night .search-item,
+body.gg-night .gg-center button,
+body.gg-night .gg-card,
+body.gg-night .gg-lvl,
+body.gg-night .gg-r,
+body.gg-night .gg-login div{
+  background:#17252f!important;
+  color:#e8f3f7!important;
+  border-color:#2a404c!important;
+}
+
+body.gg-night .input{
+  background:#14222b!important;
+  color:#e8f3f7!important;
+  border-color:#2a404c!important;
+}
+
+body.gg-night .secondary{
+  background:#17252f!important;
+  color:#e8f3f7!important;
+  border-color:#2a404c!important;
+}
+
+body.gg-night .sheet{
+  background:#101b23!important;
+  color:#e8f3f7!important;
+}
+
+@media(max-width:760px){
+
+  .gg-center{
+    grid-template-columns:
+      repeat(2,minmax(0,1fr));
+  }
+
+  .gg-grid,
+  .gg-market{
+    grid-template-columns:
+      repeat(2,minmax(0,1fr));
+  }
+
+  .gg-passlevels{
+    grid-template-columns:
+      repeat(3,minmax(0,1fr));
+  }
+
+  .gg-login{
+    overflow:auto;
+    grid-template-columns:
+      repeat(7,62px);
+  }
+}
+`;
+
+document.head.appendChild(
+  ggStyle
+);
+
+/* ============================================================
+   ИГРОВОЙ ЦЕНТР
+============================================================ */
+
+function ggViews(){
+
+  if(
+    document.querySelector(
+      '#view-tasks'
+    )
+  ){
+    return;
+  }
+
+  const main=
+    $('#main');
+
+  if(!main)return;
+
+  main.insertAdjacentHTML(
+    'beforeend',
+    `
+
+    <section
+      class="view"
+      id="view-tasks">
+
+      <div class="page">
+
+        <div class="head">
+
+          <div>
+            <h2>
+              Задания
+            </h2>
+
+            <p>
+              Выполняй миссии каждый день
+            </p>
+          </div>
+
+        </div>
+
+        <div
+          class="gg-card"
+          style="margin-bottom:9px">
+
+          <div class="gg-row">
+
+            <b class="gg-title">
+              Ежедневные задания
+            </b>
+
+            <span
+              class="gg-muted"
+              id="ggTaskDate">
+              Сегодня
+            </span>
+
+          </div>
+
+        </div>
+
+        <div
+          class="gg-grid"
+          style="grid-template-columns:1fr"
+          id="ggTasks">
+        </div>
+
+      </div>
+
+    </section>
+
+    <section
+      class="view"
+      id="view-pass">
+
+      <div class="page">
+
+        <div
+          class="gg-pass">
+
+          <h2>
+            Battle Pass
+          </h2>
+
+          <p>
+            100 уровней. XP дают открытия,
+            ежедневный вход и задания.
+          </p>
+
+          <div class="gg-row">
+
+            <span
+              id="ggBPLevel">
+              Уровень 1/100
+            </span>
+
+            <b
+              id="ggBPXP">
+              0 XP
+            </b>
+
+          </div>
+
+          <div
+            class="gg-taskbar">
+
+            <i
+              id="ggBPBar"
+              style="width:0%">
+            </i>
+
+          </div>
+
+        </div>
+
+        <div class="head">
+
+          <div>
+            <h2>
+              Награды
+            </h2>
+
+            <p>
+              Каждый уровень можно забрать один раз
+            </p>
+          </div>
+
+        </div>
+
+        <div
+          class="gg-passlevels"
+          id="ggBPLevels">
+        </div>
+
+      </div>
+
+    </section>
+
+    <section
+      class="view"
+      id="view-market">
+
+      <div class="page">
+
+        <div
+          class="hero"
+          style="padding:14px">
+
+          <div class="kicker">
+            Marketplace
+          </div>
+
+          <h1
+            style="font-size:27px">
+            Маркет GiftTGame
+          </h1>
+
+          <p>
+            Выставляй виртуальные подарки
+            за любую цену в жетонах
+            или покупай их у игроков.
+          </p>
+
+          <div
+            class="row"
+            style="margin-top:10px">
+
+            <button
+              class="btn soft-btn"
+              id="ggMarketAll">
+              Все
+            </button>
+
+            <button
+              class="btn secondary"
+              id="ggMarketMine">
+              Мои
+            </button>
+
+          </div>
+
+        </div>
+
+        <div class="head">
+
+          <div>
+            <h2>
+              Объявления
+            </h2>
+
+            <p>
+              Виртуальные сделки внутри игры
+            </p>
+          </div>
+
+        </div>
+
+        <div
+          class="gg-market"
+          id="ggMarket">
+        </div>
+
+      </div>
+
+    </section>
+
+    <section
+      class="view"
+      id="view-rating">
+
+      <div class="page">
+
+        <div
+          class="hero"
+          style="padding:14px">
+
+          <div class="kicker">
+            TOP 100
+          </div>
+
+          <h1
+            style="font-size:27px">
+            Рейтинг
+          </h1>
+
+          <p>
+            Игроки отсортированы
+            по балансу игровых жетонов.
+          </p>
+
+          <div class="stats">
+
+            <div class="stat">
+
+              <b
+                id="ggRank">
+                —
+              </b>
+
+              <span>
+                твой ранг
+              </span>
+
+            </div>
+
+            <div class="stat">
+
+              <b
+                id="ggRankCount">
+                0
+              </b>
+
+              <span>
+                игроков
+              </span>
+
+            </div>
+
+            <div class="stat">
+
+              <b>
+                100
+              </b>
+
+              <span>
+                мест
+              </span>
+
+            </div>
+
+          </div>
+
+        </div>
+
+        <div class="head">
+
+          <div>
+            <h2>
+              Топ 100
+            </h2>
+
+            <p>
+              Самые богатые аккаунты GiftTGame
+            </p>
+          </div>
+
+        </div>
+
+        <div
+          class="gg-rating"
+          id="ggRating">
+        </div>
+
+      </div>
+
+    </section>
+    `
+  );
+}
+
+ggViews();
+
+/* ============================================================
+   КНОПКИ ЦЕНТРА
+============================================================ */
+
+const hero=
+  $('#view-cases .hero');
+
+if(
+  hero &&
+  !$('#ggCenter')
+){
+  hero.insertAdjacentHTML(
+    'afterend',
+    `
+
+    <div
+      class="gg-center"
+      id="ggCenter">
+
+      <button
+        data-ggtab="tasks">
+
+        <small>
+          DAILY
+        </small>
+
+        <b>
+          Задания
+        </b>
+
+        <span>
+          Жетоны и XP
+        </span>
+
+      </button>
+
+      <button
+        data-ggtab="pass">
+
+        <small>
+          100 LEVELS
+        </small>
+
+        <b>
+          Battle Pass
+        </b>
+
+        <span>
+          100 наград
+        </span>
+
+      </button>
+
+      <button
+        data-ggtab="market">
+
+        <small>
+          P2P
+        </small>
+
+        <b>
+          Маркет
+        </b>
+
+        <span>
+          Покупай и продавай
+        </span>
+
+      </button>
+
+      <button
+        data-ggtab="rating">
+
+        <small>
+          TOP 100
+        </small>
+
+        <b>
+          Рейтинг
+        </b>
+
+        <span>
+          Богатейшие игроки
+        </span>
+
+      </button>
+
+    </div>
+    `
+  );
+}
+
+/* ============================================================
+   СЕРИЯ ЕЖЕДНЕВНЫХ ВХОДОВ
+============================================================ */
+
+if(
+  !$('#ggLoginCard')
+){
+
+  const daily=
+    $('#view-free .daily');
+
+  if(daily){
+
+    daily.insertAdjacentHTML(
+      'afterbegin',
+      `
+
+      <div
+        class="gg-card"
+        id="ggLoginCard"
+        style="
+          margin-bottom:10px">
+
+        <div class="gg-row">
+
+          <div>
+
+            <b
+              class="gg-title">
+              Серия ежедневного входа
+            </b>
+
+            <div
+              class="gg-muted"
+              id="ggLoginStatus">
+              Проверяем
+            </div>
+
+          </div>
+
+          <button
+            class="btn primary"
+            id="ggLoginBtn">
+            Забрать
+          </button>
+
+        </div>
+
+        <div
+          class="gg-login"
+          id="ggLoginDays"
+          style="
+            margin-top:9px">
+        </div>
+
+      </div>
+      `
+    );
+  }
+}
+
+function ggRenderLogin(
+  data
+){
+
+  const values=[
+    1000,
+    1500,
+    2500,
+    4000,
+    6000,
+    8500,
+    15000
+  ];
+
+  $('#ggLoginDays')
+    .innerHTML=
+      values
+        .map(
+          (value,index)=>`
+
+          <div>
+
+            <b>
+              День ${index+1}
+            </b>
+
+            <span>
+              +${fmt(value)}
+            </span>
+
+          </div>
+
+        `
+        )
+        .join('');
+
+  $('#ggLoginStatus')
+    .textContent=
+      data?.claimed
+        ? 'Сегодня уже получено'
+        : `Серия: ${data?.streak||1} день`;
+
+  const button=
+    $('#ggLoginBtn');
+
+  button.disabled=
+    Boolean(
+      data?.claimed
+    );
+
+  button.textContent=
+    data?.claimed
+      ? 'Получено'
+      : 'Забрать';
+}
+
+async function ggLoadLogin(){
+
+  try{
+
+    const data=
+      await api(
+        '/api/login-reward',
+        {
+          method:
+            'GET'
+        }
+      );
+
+    state.login=
+      data;
+
+    ggRenderLogin(
+      data
+    );
+
+  }catch(_){}
+}
+
+async function ggClaimLogin(){
+
+  try{
+
+    const data=
+      await api(
+        '/api/login-reward',
+        {
+          method:
+            'POST'
+        }
+      );
+
+    if(
+      data.balance!=null
+    ){
+      state.user.balance=
+        data.balance;
+    }
+
+    ggRenderLogin(
+      {
+        ...data,
+        claimed:true
+      }
+    );
+
+    renderAll();
+
+    showToast(
+      `+${fmt(data.reward)} жетонов`
+    );
+
+  }catch(error){
+
+    showToast(
+      error.message
+    );
+  }
+}
+
+/* ============================================================
+   TASKS
+============================================================ */
+
+async function ggLoadTasks(){
+
+  try{
+
+    const data=
+      await api(
+        '/api/tasks',
+        {
+          method:
+            'GET'
+        }
+      );
+
+    $('#ggTaskDate')
+      .textContent=
+        data.period||
+        'Сегодня';
+
+    $('#ggTasks')
+      .innerHTML=
+        (
+          data.tasks||[]
+        )
+        .map(
+          task=>{
+
+            const pct=
+              Math.min(
+                100,
+                Math.round(
+                  (
+                    Number(
+                      task.progress||0
+                    ) /
+                    Number(
+                      task.target||1
+                    )
+                  )*100
+                )
+              );
+
+            const ready=
+              Number(
+                task.progress||0
+              )>=
+              Number(
+                task.target||1
+              );
+
+            return `
+
+            <div
+              class="gg-card">
+
+              <div
+                class="gg-row">
+
+                <div>
+
+                  <div
+                    class="gg-title">
+                    ${esc(
+                      task.title
+                    )}
+                  </div>
+
+                  <div
+                    class="gg-muted">
+                    ${fmt(
+                      task.progress
+                    )}
+                    /
+                    ${fmt(
+                      task.target
+                    )}
+
+                    ·
+
+                    +${fmt(
+                      task.xp
+                    )}
+                    XP
+                  </div>
+
+                </div>
+
+                <div
+                  class="gg-reward">
+                  +${fmt(
+                    task.reward
+                  )}
+                  жет.
+                </div>
+
+              </div>
+
+              <div
+                class="gg-taskbar">
+
+                <i
+                  style="
+                    width:${pct}%">
+                </i>
+
+              </div>
+
+              <button
+                class="btn ${
+                  ready &&
+                  !task.claimed
+                    ? 'primary'
+                    : 'secondary'
+                }"
+                style="
+                  width:100%;
+                  min-height:34px;
+                  padding:7px;
+                  font-size:8px"
+                data-gg-task="${esc(
+                  task.id
+                )}"
+                ${
+                  !ready ||
+                  task.claimed
+                    ? 'disabled'
+                    : ''
+                }>
+
+                ${
+                  task.claimed
+                    ? 'Получено'
+                    : ready
+                      ? 'Забрать'
+                      : 'Выполняй'
+                }
+
+              </button>
+
+            </div>
+
+            `;
+          }
+        )
+        .join('');
+
+  }catch(error){
+
+    $('#ggTasks')
+      .innerHTML=
+        `
+        <div
+          class="empty">
+
+          <strong>
+            Ошибка
+          </strong>
+
+          <span>
+            ${esc(
+              error.message
+            )}
+          </span>
+
+        </div>
+        `;
+  }
+}
+
+async function ggClaimTask(
+  id
+){
+
+  try{
+
+    const data=
+      await api(
+        '/api/tasks/claim',
+        {
+          method:
+            'POST',
+
+          body:
+            JSON.stringify({
+              taskId:id
+            })
+        }
+      );
+
+    state.user.balance=
+      data.balance;
+
+    await ggLoadTasks();
+
+    await ggLoadBP();
+
+    renderAll();
+
+    showToast(
+      `+${fmt(
+        data.task.reward
+      )} жетонов`
+    );
+
+  }catch(error){
+
+    showToast(
+      error.message
+    );
+  }
+}
+
+/* ============================================================
+   BATTLE PASS
+============================================================ */
+
+async function ggLoadBP(){
+
+  try{
+
+    const data=
+      await api(
+        '/api/battlepass',
+        {
+          method:
+            'GET'
+        }
+      );
+
+    state.bp=
+      data;
+
+    $('#ggBPLevel')
+      .textContent=
+        `Уровень ${
+          data.level
+        }/100`;
+
+    $('#ggBPXP')
+      .textContent=
+        `${fmt(
+          data.xp
+        )} XP`;
+
+    $('#ggBPBar')
+      .style.width=
+        (
+          data.level>=100
+            ? 100
+            : data.xp%100
+        )+
+        '%';
+
+    const claimed=
+      new Set(
+        data.claimed||[]
+      );
+
+    $('#ggBPLevels')
+      .innerHTML=
+        (
+          data.levels||[]
+        )
+        .map(
+          item=>`
+
+          <div
+            class="
+              gg-lvl
+              ${
+                item.unlocked
+                  ? ''
+                  : 'lock'
+              }
+              ${
+                claimed.has(
+                  item.level
+                )
+                  ? 'done'
+                  : ''
+              }">
+
+            <b
+              style="
+                font-size:8px;
+                color:#0b86c4">
+
+              Уровень
+              ${item.level}
+
+            </b>
+
+            <strong
+              style="
+                font-size:8px">
+
+              +${fmt(
+                item.reward.coins
+              )}
+
+            </strong>
+
+            <small
+              class="gg-muted">
+
+              ${
+                item.unlocked
+                  ? (
+                      claimed.has(
+                        item.level
+                      )
+                        ? 'Получено'
+                        : 'Доступно'
+                    )
+                  : (
+                      `${fmt(
+                        (
+                          Number(
+                            item.level
+                          )-1
+                        )*100
+                      )} XP`
+                    )
+              }
+
+            </small>
+
+            <button
+              class="
+                btn
+                ${
+                  item.unlocked &&
+                  !claimed.has(
+                    item.level
+                  )
+                    ? 'primary'
+                    : 'secondary'
+                }
+              "
+              style="
+                min-height:28px;
+                padding:5px;
+                font-size:7px"
+
+              data-gg-bp="${
+                item.level
+              }"
+
+              ${
+                !item.unlocked ||
+                claimed.has(
+                  item.level
+                )
+                  ? 'disabled'
+                  : ''
+              }>
+
+              ${
+                claimed.has(
+                  item.level
+                )
+                  ? 'Получено'
+                  : item.unlocked
+                    ? 'Забрать'
+                    : 'Закрыто'
+              }
+
+            </button>
+
+          </div>
+
+          `
+        )
+        .join('');
+
+  }catch(error){
+
+    $('#ggBPLevels')
+      .innerHTML=
+        `
+        <div
+          class="empty"
+          style="
+            grid-column:1/-1">
+
+          <strong>
+            Battle Pass
+          </strong>
+
+          <span>
+            ${esc(
+              error.message
+            )}
+          </span>
+
+        </div>
+        `;
+  }
+}
+
+async function ggClaimBP(
+  level
+){
+
+  try{
+
+    const data=
+      await api(
+        '/api/battlepass/claim',
+        {
+          method:
+            'POST',
+
+          body:
+            JSON.stringify({
+              level
+            })
+        }
+      );
+
+    state.user.balance=
+      data.balance;
+
+    await ggLoadBP();
+
+    renderAll();
+
+    showToast(
+      `Уровень ${level} · +${fmt(
+        data.reward.coins
+      )}`
+    );
+
+  }catch(error){
+
+    showToast(
+      error.message
+    );
+  }
+}
+
+/* ============================================================
+   MARKET
+============================================================ */
+
+async function ggLoadMarket(
+  mine=false
+){
+
+  const box=
+    $('#ggMarket');
+
+  box.innerHTML=
+    `
+    <div
+      class="empty"
+      style="
+        grid-column:1/-1">
+
+      <strong>
+        Загрузка
+      </strong>
+
+      <span>
+        Получаем объявления
+      </span>
+
+    </div>
+    `;
+
+  try{
+
+    const data=
+      await api(
+        '/api/market'+
+        (
+          mine
+            ? '?mine=1'
+            : ''
+        ),
+        {
+          method:
+            'GET'
+        }
+      );
+
+    const arr=
+      data.listings||[];
+
+    if(!arr.length){
+
+      box.innerHTML=
+        `
+        <div
+          class="empty"
+          style="
+            grid-column:1/-1">
+
+          <strong>
+            ${
+              mine
+                ? 'У тебя пока нет объявлений'
+                : 'Маркет пуст'
+            }
+          </strong>
+
+          <span>
+            Выставь первый подарок
+            из коллекции.
+          </span>
+
+        </div>
+        `;
+
+      return;
+    }
+
+    box.innerHTML=
+      arr.map(
+        item=>{
+
+          const gift=
+            item.gift;
+
+          const bg=
+            gift.background||
+            ggBg(gift);
+
+          return `
+
+          <div
+            class="gg-card">
+
+            <div
+              class="art"
+              style="
+                background:
+                  linear-gradient(
+                    145deg,
+                    ${bg.a||bg[2]},
+                    ${bg.b||bg[3]}
+                  )">
+
+              <img
+                src="${esc(
+                  gift.image||''
+                )}"
+                onerror="
+                  this.src='${fallbackImage()}'
+                ">
+
+            </div>
+
+            <b>
+              ${esc(
+                gift.name
+              )}
+            </b>
+
+            <small>
+
+              #${String(
+                gift.serial
+              ).padStart(
+                6,
+                '0'
+              )}
+
+              ·
+
+              ${esc(
+                bg.name||
+                bg[0]||
+                'Sky'
+              )}
+
+            </small>
+
+            <div
+              class="price">
+
+              ${fmt(
+                item.price
+              )}
+              жет.
+
+            </div>
+
+            <small>
+
+              ${esc(
+                item.seller?.username||
+                item.seller?.name||
+                'Игрок'
+              )}
+
+            </small>
+
+            <button
+              class="
+                btn
+                ${
+                  item.mine
+                    ? 'secondary'
+                    : 'primary'
+                }"
+              style="
+                width:100%;
+                margin-top:7px;
+                min-height:32px;
+                padding:6px;
+                font-size:8px"
+
+              data-gg-market-buy="${
+                esc(
+                  item.id
+                )
+              }"
+
+              ${
+                item.mine
+                  ? 'disabled'
+                  : ''
+              }>
+
+              ${
+                item.mine
+                  ? 'Твоё'
+                  : 'Купить'
+              }
+
+            </button>
+
+            ${
+              item.mine
+                ? `
+                  <button
+                    class="btn secondary"
+                    style="
+                      width:100%;
+                      margin-top:5px;
+                      min-height:30px;
+                      padding:6px;
+                      font-size:8px"
+                    data-gg-market-cancel="${
+                      esc(
+                        item.id
+                      )
+                    }">
+
+                    Снять
+
+                  </button>
+                `
+                : ''
+            }
+
+          </div>
+
+          `;
+        }
+      ).join('');
+
+  }catch(error){
+
+    box.innerHTML=
+      `
+      <div
+        class="empty"
+        style="
+          grid-column:1/-1">
+
+        <strong>
+          Ошибка
+        </strong>
+
+        <span>
+          ${esc(
+            error.message
+          )}
+        </span>
+
+      </div>
+      `;
+  }
+}
+
+/* ============================================================
+   ВЫСТАВЛЕНИЕ ПОДАРКА
+============================================================ */
+
+function ggListGift(
+  id
+){
+
+  const item=
+    state.inventory.find(
+      x =>
+        x.instance_id===
+        id
+    );
+
+  if(!item){
+    return;
+  }
+
+  const bg=
+    item.background||
+    ggBg(item);
+
+  const recommended=
+    Math.max(
+      10,
+      Math.round(
+        Number(
+          item.sell_value||
+          10
+        )*1.7
+      )
+    );
+
+  modal(`
+    <div
+      class="sheet-head">
+
+      <h3>
+        Маркет
+      </h3>
+
+      <button
+        class="x"
+        data-close>
+
+        <svg
+          viewBox="0 0 24 24">
+
+          <path
+            d="m6 6 12 12M18 6 6 18"/>
+
+        </svg>
+
+      </button>
+
+    </div>
+
+    <div
+      class="notice">
+
+      Фон
+      <b>
+        ${esc(
+          bg.name||
+          bg[0]
+        )}
+      </b>
+
+      влияет на
+      игровую стоимость.
+      Цену объявления
+      выбираешь ты.
+
+    </div>
+
+    <div
+      class="transfer-form">
+
+      <label
+        class="form-label">
+
+        Цена в жетонах
+
+      </label>
+
+      <input
+        class="input"
+        id="ggPrice"
+        type="number"
+        inputmode="numeric"
+        min="1"
+        max="500000000"
+        value="${recommended}">
+
+      <button
+        class="btn primary"
+        id="ggListBtn">
+
+        Выставить
+
+      </button>
+
+    </div>
+  `);
+
+  $('#ggListBtn').onclick=
+    async()=>{
+
+      const price=
+        Math.floor(
+          Number(
+            $('#ggPrice')
+              .value
+          )||0
+        );
+
+      if(price<1){
+        showToast(
+          'Укажи цену'
+        );
+
+        return;
+      }
+
+      try{
+
+        await api(
+          '/api/market/list',
+          {
+            method:
+              'POST',
+
+            body:
+              JSON.stringify({
+                instanceId:id,
+                price
+              })
+          }
+        );
+
+        closeModal();
+
+        await ggLoadMarket();
+
+        showToast(
+          'Подарок выставлен'
+        );
+
+      }catch(error){
+
+        showToast(
+          error.message
+        );
+      }
+    };
+}
+
+/* ============================================================
+   BUY MARKET
+============================================================ */
+
+async function ggBuyMarket(
+  id
+){
+
+  try{
+
+    const data=
+      await api(
+        '/api/market/buy',
+        {
+          method:
+            'POST',
+
+          body:
+            JSON.stringify({
+              id
+            })
+        }
+      );
+
+    state.user.balance=
+      data.balance;
+
+    await loadMe();
+
+    await ggLoadMarket();
+
+    showToast(
+      'Подарок куплен'
+    );
+
+  }catch(error){
+
+    showToast(
+      error.message
+    );
+  }
+}
+
+async function ggCancelMarket(
+  id
+){
+
+  try{
+
+    await api(
+      '/api/market/cancel',
+      {
+        method:
+          'POST',
+
+        body:
+          JSON.stringify({
+            id
+          })
+      }
+    );
+
+    await ggLoadMarket(
+      true
+    );
+
+    showToast(
+      'Объявление снято'
+    );
+
+  }catch(error){
+
+    showToast(
+      error.message
+    );
+  }
+}
+
+/* ============================================================
+   РЕЙТИНГ
+============================================================ */
+
+async function ggLoadRating(){
+
+  const box=
+    $('#ggRating');
+
+  try{
+
+    const data=
+      await api(
+        '/api/rating',
+        {
+          method:
+            'GET'
+        }
+      );
+
+    $('#ggRank')
+      .textContent=
+        '#'+fmt(
+          data.my_rank||1
+        );
+
+    $('#ggRankCount')
+      .textContent=
+        fmt(
+          (
+            data.users||[]
+          ).length
+        );
+
+    box.innerHTML=
+      (
+        data.users||[]
+      )
+      .map(
+        user=>`
+
+        <div
+          class="gg-r">
+
+          <div
+            style="
+              font-size:8px;
+              font-weight:950;
+              text-align:center">
+
+            #${user.rank}
+
+          </div>
+
+          <img
+            src="${esc(
+              user.photo_url||
+              fallbackImage()
+            )}"
+            onerror="
+              this.src='${fallbackImage()}'
+            ">
+
+          <div>
+
+            <b>
+              ${esc(
+                [
+                  user.first_name,
+                  user.last_name
+                ]
+                .filter(Boolean)
+                .join(' ')||
+                user.username||
+                'Игрок'
+              )}
+            </b>
+
+            <small>
+              ${esc(
+                user.username||
+                'без username'
+              )}
+            </small>
+
+          </div>
+
+          <strong>
+
+            ${fmt(
+              user.balance
+            )}
+
+          </strong>
+
+        </div>
+
+        `
+      )
+      .join('');
+
+  }catch(error){
+
+    box.innerHTML=
+      `
+      <div
+        class="empty">
+
+        <strong>
+          Рейтинг недоступен
+        </strong>
+
+        <span>
+          ${esc(
+            error.message
+          )}
+        </span>
+
+      </div>
+      `;
+  }
+}
+
+/* ============================================================
+   ИНВЕНТАРЬ + ФОНЫ + MARKET
+============================================================ */
+
+renderInvCard=
+function(x){
+
+  const g={
+    id:
+      x.gift_id,
+
+    name:
+      x.name,
+
+    short_name:
+      x.short_name,
+
+    stars:
+      x.stars,
+
+    rarity:
+      x.rarity,
+
+    serial:
+      x.serial
+  };
+
+  const bg=
+    x.background||
+    ggBg(g);
+
+  return `
+
+    <article
+      class="inv">
+
+      <div
+        class="gift-img"
+        style="
+          background:
+            linear-gradient(
+              145deg,
+              ${bg.a||bg[2]},
+              ${bg.b||bg[3]}
+            )">
+
+        <span
+          class="rarity">
+
+          ${esc(
+            RARITY_NAMES[
+              x.rarity
+            ]||
+            'Обычный'
+          )}
+
+        </span>
+
+        ${img(g)}
+
+      </div>
+
+      <div
+        class="inv-name">
+
+        ${esc(
+          x.name
+        )}
+
+      </div>
+
+      <div
+        class="inv-line">
+
+        <span
+          class="serial">
+
+          #${String(
+            x.serial
+          ).padStart(
+            6,
+            '0'
+          )}
+
+        </span>
+
+        <span>
+
+          ${fmt(
+            x.stars||
+            0
+          )}
+
+          Stars
+
+        </span>
+
+      </div>
+
+      <div
+        class="inv-line">
+
+        <span
+          class="gg-bg-badge">
+
+          ${esc(
+            bg.name||
+            bg[0]
+          )}
+
+          ·
+
+          +${Math.round(
+            (
+              Number(
+                bg.multiplier||
+                bg[1]||
+                1
+              )-
+              1
+            )*100
+          )}%
+
+        </span>
+
+        <span
+          style="
+            color:#087fb9;
+            font-weight:900">
+
+          ${fmt(
+            x.sell_value||
+            5
+          )}
+
+        </span>
+
+      </div>
+
+      <div
+        class="inv-actions">
+
+        <button
+          class="secondary"
+          data-sell="${
+            esc(
+              x.instance_id
+            )
+          }">
+
+          Продать
+
+        </button>
+
+        <button
+          class="soft-btn"
+          data-transfer="${
+            esc(
+              x.instance_id
+            )
+          }">
+
+          Передать
+
+        </button>
+
+      </div>
+
+      <button
+        class="btn primary"
+        style="
+          width:100%;
+          margin-top:5px;
+          min-height:32px;
+          padding:6px;
+          font-size:8px"
+
+        data-market="${
+          esc(
+            x.instance_id
+          )
+        }">
+
+        На маркет
+
+      </button>
+
+    </article>
+
+  `;
+};
+
+/* ============================================================
+   NAV
+============================================================ */
+
+const oldOpenNav=
+  openNav;
+
+openNav=
+function(tab){
+
+  oldOpenNav(
+    tab
+  );
+
+  if(
+    tab==='tasks'
+  ){
+    ggLoadTasks();
+  }
+
+  if(
+    tab==='pass'
+  ){
+    ggLoadBP();
+  }
+
+  if(
+    tab==='market'
+  ){
+    ggLoadMarket(
+      false
+    );
+  }
+
+  if(
+    tab==='rating'
+  ){
+    ggLoadRating();
+  }
+
+  if(
+    tab==='free'
+  ){
+    ggLoadLogin();
+  }
+};
+
+/* ============================================================
+   EVENTS
+============================================================ */
+
+document.addEventListener(
+  'click',
+  event=>{
+
+    const tab=
+      event.target.closest(
+        '[data-ggtab]'
+      );
+
+    if(tab){
+
+      openNav(
+        tab.dataset.ggtab
+      );
+
+      return;
+    }
+
+    const task=
+      event.target.closest(
+        '[data-gg-task]'
+      );
+
+    if(task){
+
+      ggClaimTask(
+        task.dataset.ggTask
+      );
+
+      return;
+    }
+
+    const bp=
+      event.target.closest(
+        '[data-gg-bp]'
+      );
+
+    if(bp){
+
+      ggClaimBP(
+        Number(
+          bp.dataset.ggBp
+        )
+      );
+
+      return;
+    }
+
+    const market=
+      event.target.closest(
+        '[data-market]'
+      );
+
+    if(market){
+
+      ggListGift(
+        market.dataset.market
+      );
+
+      return;
+    }
+
+    const buy=
+      event.target.closest(
+        '[data-gg-market-buy]'
+      );
+
+    if(buy){
+
+      ggBuyMarket(
+        buy.dataset
+          .ggMarketBuy
+      );
+
+      return;
+    }
+
+    const cancel=
+      event.target.closest(
+        '[data-gg-market-cancel]'
+      );
+
+    if(cancel){
+
+      ggCancelMarket(
+        cancel.dataset
+          .ggMarketCancel
+      );
+    }
+  }
+);
+
+/* ============================================================
+   LOGIN BUTTON
+============================================================ */
+
+$('#ggLoginBtn')
+  ?.addEventListener(
+    'click',
+    ggClaimLogin
+  );
+
+/* ============================================================
+   MARKET BUTTONS
+============================================================ */
+
+$('#ggMarketAll')
+  ?.addEventListener(
+    'click',
+    () =>
+      ggLoadMarket(
+        false
+      )
+  );
+
+$('#ggMarketMine')
+  ?.addEventListener(
+    'click',
+    () =>
+      ggLoadMarket(
+        true
+      )
+  );
+
+/* ============================================================
+   NIGHT THEME
+============================================================ */
+
+if(
+  !$('#ggThemeSwitch')
+){
+
+  $('#view-profile .settings')
+    ?.insertAdjacentHTML(
+      'beforeend',
+      `
+
+      <div
+        class="setting">
+
+        <div>
+
+          <b>
+            Ночная тема
+          </b>
+
+          <span>
+            Светлый и тёмный интерфейс GiftTGame
+          </span>
+
+        </div>
+
+        <button
+          class="switch"
+          id="ggThemeSwitch">
+        </button>
+
+      </div>
+
+      `
+    );
+}
+
+function ggTheme(
+  theme
+){
+
+  const night=
+    theme==='night';
+
+  document.body
+    .classList
+    .toggle(
+      'gg-night',
+      night
+    );
+
+  localStorage.setItem(
+    'ggTheme',
+    night
+      ? 'night'
+      : 'light'
+  );
+
+  const button=
+    $('#ggThemeSwitch');
+
+  if(button){
+
+    button.classList.toggle(
+      'on',
+      night
+    );
+  }
+
+  try{
+
+    tg?.setHeaderColor(
+      night
+        ? '#0f1820'
+        : '#ffffff'
+    );
+
+    tg?.setBackgroundColor(
+      night
+        ? '#0f1820'
+        : '#e9f4fa'
+    );
+
+  }catch(_){}
+}
+
+ggTheme(
+  localStorage.getItem(
+    'ggTheme'
+  )||
+  'light'
+);
+
+$('#ggThemeSwitch')
+  ?.addEventListener(
+    'click',
+    () =>
+      ggTheme(
+        document.body
+          .classList
+          .contains(
+            'gg-night'
+          )
+          ? 'light'
+          : 'night'
+      )
+  );
+
+/* ============================================================
+   ОБНОВЛЯЕМ GG
+============================================================ */
+
+refreshGG();
+
+/* ============================================================
+   ПРЕДУПРЕЖДЕНИЕ
+============================================================ */
+
+const notice=
+  $('#view-cases .notice');
+
+if(notice){
+
+  notice.innerHTML=`
+
+    <strong>
+      GiftTGame — неофициальная виртуальная игра.
+    </strong>
+
+    Все подарки, игровые номера,
+    уникальные фоны, цены, продажи,
+    передачи и маркет существуют
+    только внутри игры и не являются
+    настоящими Telegram Gifts или NFT.
+
+    Telegram Stars используются только
+    для цифровых игровых покупок.
+
+  `;
+}
+
+/* ============================================================
+   BOOT WRAPPER
+============================================================ */
+
+const oldBoot=
+  boot;
+
+boot=
+async function(){
+
+  /*
+    Сначала запускаем старую
+    рабочую инициализацию.
+  */
+
+  await oldBoot();
+
+  refreshGG();
+
+  /*
+    Новые системы грузятся
+    ПОСЛЕ первого экрана.
+    Они больше не блокируют
+    открытие игры.
+  */
+
+  setTimeout(
+    ()=>{
+      ggLoadLogin();
+      ggLoadTasks();
+      ggLoadBP();
+    },
+    100
+  );
+};
+
 boot();
 })();
 </script>
